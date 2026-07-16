@@ -123,13 +123,14 @@ pytest tests/ -v
 ```
 pawn-mcp/
     server.py         # MCP server entry point
-    encoding.py       # CP1252 encode/decode, line ending detection
+    encoding.py       # CP1252 encode/decode, line ending detection,
+                      #   atomic writes, SHA256 verification
     patching.py       # Unified diff parser and applicator
     pyproject.toml    # Project metadata
     tools/
         read.py       # read_pawn_file tool
-        write.py      # write_pawn_file tool
-        patch.py      # apply_patch tool
+        write.py      # write_pawn_file tool (atomic writes)
+        patch.py      # apply_patch tool (atomic writes)
         verify.py     # verify_encoding tool
     tests/
         conftest.py   # Test fixtures with Spanish char test data
@@ -139,7 +140,33 @@ pawn-mcp/
         test_write.py
         test_patch.py
         test_verify.py
+        test_regression_p0_p1.py  # Regression tests for critical fixes
 ```
+
+## Response Format
+
+All tools return a consistent response shape:
+
+```json
+// Success
+{ "success": true, "sha256": "...", "content": "...", ... }
+
+// Error
+{ "success": false, "error": true, "message": "..." }
+```
+
+The `success` key is **always** present — check it first before accessing
+any other fields.
+
+## Safety Guarantees
+
+| Feature | Description |
+|---|---|
+| **Atomic writes** | Files are written to a temp file first, then atomically renamed. A crash mid-write **never** leaves a partially-written file on disk. |
+| **SHA-256 verification** | Every write/patch verifies the file hash before modifying, detecting external changes (best-effort advisory lock). |
+| **No replacement characters** | If content contains a character not in CP1252, the operation **aborts** with a detailed error — never silently replaces with `?` or `U+FFFD`. |
+| **Correct column reporting** | Encoding errors report accurate (line, column) positions even in CRLF files — no off-by-one from counting `\r` bytes. |
+| **Line ending preservation** | CRLF, LF, and CR line endings are detected and preserved through all operations. |
 
 ## Encoding Rules
 

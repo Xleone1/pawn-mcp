@@ -6,6 +6,8 @@ written as Windows-1252, and must preserve existing line endings.
 """
 
 import hashlib
+import os
+import tempfile
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -49,7 +51,7 @@ def detect_line_endings(data: bytes) -> str:
     """
     if b'\r\n' in data:
         return 'CRLF'
-    if b'\r' in data and b'\r\n' not in data:
+    if b'\r' in data:
         return 'CR'
     return 'LF'
 
@@ -62,10 +64,52 @@ def compute_sha256(data: bytes) -> str:
 def decode_cp1252(data: bytes) -> str:
     """
     Decode raw bytes using Windows-1252.
-    Uses 'replace' error handler to detect problems,
-    but the caller should check for replacement characters.
+
+    Uses strict mode — raises UnicodeDecodeError on invalid bytes.
     """
     return data.decode('cp1252')
+
+
+def _compute_line_column(text: str, position: int) -> tuple[int, int]:
+    """
+    Compute a human-readable (1-based line, 1-based column) for a
+    character at *position* inside *text*.
+
+    Correctly handles both LF and CRLF line endings: in CRLF text the
+    trailing ``\\r`` that precedes a ``\\n`` is considered part of the
+    *previous* line (matching visual editor behaviour), so column
+    numbers are not inflated.
+    """
+    prefix = text[:position]
+    line = prefix.count('\n') + 1
+    last_nl = prefix.rfind('\n')
+    if last_nl == -1:
+        col = position + 1
+    else:
+        col = position - last_nl
+    return line, col
+
+
+def _find_cp1252_encoding_issues(text: str) -> list[EncodingIssue]:
+    """Find every character in *text* that cannot be encoded to CP1252."""
+    issues: list[EncodingIssue] = []
+    for i, char in enumerate(text):
+        try:
+            char.encode('cp1252')
+        except UnicodeEncodeError:
+            codepoint = f"U+{ord(char):04X}"
+            line, col = _compute_line_column(text, i)
+            issues.append(EncodingIssue(
+                character=char,
+                codepoint=codepoint,
+                line=line,
+                column=col,
+                description=(
+                    f"Cannot encode character {codepoint} "
+                    f"({char!r}) at line {line}, column {col}"
+                ),
+            ))
+    return issues
 
 
 def encode_cp1252(text: str) -> bytes:
@@ -74,32 +118,20 @@ def encode_cp1252(text: str) -> bytes:
 
     Raises EncodingError if any character cannot be represented in CP1252.
     Never uses replacement characters.
+
+    The fast path (valid text) does a single encode; the slow path
+    iterates only when an error is detected.
     """
-    issues: list[EncodingIssue] = []
-    lines = text.split('\n')
-
-    for line_num, line in enumerate(lines, start=1):
-        for col_num, char in enumerate(line, start=1):
-            try:
-                char.encode('cp1252')
-            except UnicodeEncodeError:
-                codepoint = f"U+{ord(char):04X}"
-                issues.append(EncodingIssue(
-                    character=char,
-                    codepoint=codepoint,
-                    line=line_num,
-                    column=col_num,
-                    description=f"Cannot encode character {codepoint} ({char!r}) at line {line_num}, column {col_num}"
-                ))
-
-    if issues:
+    try:
+        return text.encode('cp1252')
+    except UnicodeEncodeError:
+        # Build detailed per-character diagnostics
+        issues = _find_cp1252_encoding_issues(text)
         details = "\n".join(issue.description for issue in issues)
         raise EncodingError(
             f"Cannot encode {len(issues)} character(s) to Windows-1252:\n{details}",
-            issues=issues
+            issues=issues,
         )
-
-    return text.encode('cp1252')
 
 
 def preserve_line_endings(text: str, target_ending: str) -> str:
@@ -127,6 +159,71 @@ def has_utf8_bom(data: bytes) -> bool:
 
 
 # CP1252 valid single-byte ranges:
+def ensure_trailing_newline(text: str, original_text: str, line_ending: str) -> str:
+    """
+    If *original_text* ended with a newline but *text* does not,
+    append the appropriate line-ending sequence.
+
+    This is a single, testable function that replaces the duplicated
+    fragile logic previously scattered across write and patch tools.
+    """
+    # Check if the original had a trailing newline of any kind
+    original_has_newline = original_text.endswith('\n') or original_text.endswith('\r')
+    if not original_has_newline:
+        return text
+    if text.endswith('\n') or text.endswith('\r'):
+        return text
+
+    if line_ending == 'CRLF':
+        return text + '\r\n'
+    elif line_ending == 'CR':
+        return text + '\r'
+    else:
+        return text + '\n'
+
+
+def read_and_verify_sha256(path: str, expected_sha256: str) -> bytes:
+    """
+    Read a file as raw bytes, verify its SHA-256 matches *expected_sha256*.
+
+    Returns the raw bytes on success.
+
+    Raises:
+        FileNotFoundError: if the file does not exist.
+        ValueError: if the SHA-256 does not match (externally modified).
+    """
+    with open(path, 'rb') as f:
+        data = f.read()
+
+    current_sha256 = hashlib.sha256(data).hexdigest()
+    if current_sha256 != expected_sha256:
+        raise ValueError(
+            f'SHA256 mismatch: file has been modified externally.\n'
+            f'  Expected: {expected_sha256}\n'
+            f'  Actual:   {current_sha256}'
+        )
+    return data
+
+
+def atomic_write(path: str, raw: bytes) -> None:
+    """
+    Write *raw* bytes atomically to *path*.
+
+    Writes to a temporary file in the same directory, fsyncs, then
+    atomically renames onto the target path.  This prevents:
+    - partial writes (crash mid-write → original stays intact).
+    - TOCTOU races where another process sees a half-written file.
+
+    Raises OSError on I/O failure.
+    """
+    dirname = os.path.dirname(path) or '.'
+    fd, tmpname = tempfile.mkstemp(dir=dirname, suffix='.tmp')
+    try:
+        os.write(fd, raw)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmpname, path)
 # 0x00-0x7F: ASCII
 # 0xA0-0xFF: Latin-1 Supplement (valid CP1252)
 # 0x80-0x9F: CP1252-specific characters (not all are assigned, but all bytes are valid in CP1252)

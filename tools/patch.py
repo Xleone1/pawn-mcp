@@ -5,12 +5,23 @@ Applies a unified diff to a Pawn source file while preserving
 Windows-1252 encoding and line endings.
 
 This is the preferred editing tool for Pawn/Open.MP projects.
+
+Uses an atomic write (temp file + rename) so the on-disk content
+is never left in a partially-written state after a crash.
 """
 
 import hashlib
 import logging
 
-from encoding import encode_cp1252, preserve_line_endings, EncodingError
+from encoding import (
+    encode_cp1252,
+    preserve_line_endings,
+    detect_line_endings,
+    ensure_trailing_newline,
+    atomic_write,
+    read_and_verify_sha256,
+    EncodingError,
+)
 from patching import apply_unified_diff
 
 logger = logging.getLogger(__name__)
@@ -29,41 +40,28 @@ def apply_patch(path: str, unified_diff: str, expected_sha256: str) -> dict:
         A dictionary with:
         - success: True/False
         - sha256: SHA-256 of the patched file (on success)
-        - Or error information if the patch failed
+        - Or error/message/encodingIssues on failure
     """
     logger.info(f"[apply_patch] Patching: {path}")
 
-    # 1. Read and verify current file
+    # 1. Read and verify current file SHA256 (shared utility)
     try:
-        with open(path, 'rb') as f:
-            current_data = f.read()
+        current_data = read_and_verify_sha256(path, expected_sha256)
     except FileNotFoundError:
         return {
             'success': False,
             'error': True,
             'message': f'File not found: {path}',
         }
-
-    current_sha256 = hashlib.sha256(current_data).hexdigest()
-
-    if current_sha256 != expected_sha256:
+    except ValueError as e:
         return {
             'success': False,
             'error': True,
-            'message': (
-                f'SHA256 mismatch: file has been modified externally.\n'
-                f'  Expected: {expected_sha256}\n'
-                f'  Actual:   {current_sha256}'
-            ),
+            'message': str(e),
         }
 
     # 2. Detect line endings
-    if b'\r\n' in current_data:
-        line_ending = 'CRLF'
-    elif b'\r' in current_data:
-        line_ending = 'CR'
-    else:
-        line_ending = 'LF'
+    line_ending = detect_line_endings(current_data)
 
     # 3. Decode as CP1252
     original_text = current_data.decode('cp1252')
@@ -78,17 +76,9 @@ def apply_patch(path: str, unified_diff: str, expected_sha256: str) -> dict:
             'message': f'Patch application failed: {e}',
         }
 
-    # 5. Normalize line endings to match original
+    # 5. Normalize line endings and preserve trailing newline
     normalized = preserve_line_endings(patched_text, line_ending)
-
-    # Preserve trailing newline
-    if original_text.endswith('\n') and not normalized.endswith('\n'):
-        if line_ending == 'CRLF':
-            normalized += '\r\n'
-        elif line_ending == 'CR':
-            normalized += '\r'
-        else:
-            normalized += '\n'
+    normalized = ensure_trailing_newline(normalized, original_text, line_ending)
 
     # 6. Encode back to CP1252
     try:
@@ -110,10 +100,9 @@ def apply_patch(path: str, unified_diff: str, expected_sha256: str) -> dict:
             ],
         }
 
-    # 7. Write the file
+    # 7. Atomic write (safe against crashes and partial writes)
     try:
-        with open(path, 'wb') as f:
-            f.write(raw)
+        atomic_write(path, raw)
     except Exception as e:
         return {
             'success': False,

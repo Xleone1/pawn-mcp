@@ -8,6 +8,8 @@ with no corruption, UTF-8 BOM, or replacement characters.
 import hashlib
 import logging
 
+from encoding import detect_line_endings
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,7 +28,11 @@ def verify_encoding(path: str) -> dict:
         path: Path to the file to verify.
 
     Returns:
-        A dictionary with diagnostics.
+        A dictionary with:
+        - success: True/False
+        - valid: True/False (same as success — kept for backward compat)
+        - encoding, path, lineEnding, sha256, sizeBytes, issues[]
+        - Or error/message on failure
     """
     logger.info(f"[verify_encoding] Verifying: {path}")
 
@@ -36,28 +42,24 @@ def verify_encoding(path: str) -> dict:
             data = f.read()
     except FileNotFoundError:
         return {
+            'success': False,
             'valid': False,
             'error': True,
             'message': f'File not found: {path}',
         }
     except PermissionError:
         return {
+            'success': False,
             'valid': False,
             'error': True,
             'message': f'Permission denied: {path}',
         }
 
     sha256 = hashlib.sha256(data).hexdigest()
-
-    # Detect line endings
-    if b'\r\n' in data:
-        line_ending = 'CRLF'
-    elif b'\r' in data:
-        line_ending = 'CR'
-    else:
-        line_ending = 'LF'
+    line_ending = detect_line_endings(data)
 
     diagnostics = {
+        'success': True,
         'valid': True,
         'path': path,
         'encoding': 'windows-1252',
@@ -69,7 +71,7 @@ def verify_encoding(path: str) -> dict:
 
     # Check 1: UTF-8 BOM
     if data[:3] == b'\xef\xbb\xbf':
-        diagnostics['valid'] = False
+        diagnostics['valid'] = diagnostics['success'] = False
         diagnostics['issues'].append({
             'severity': 'error',
             'type': 'utf8_bom',
@@ -80,7 +82,7 @@ def verify_encoding(path: str) -> dict:
     try:
         decoded = data.decode('cp1252')
     except UnicodeDecodeError as e:
-        diagnostics['valid'] = False
+        diagnostics['valid'] = diagnostics['success'] = False
         diagnostics['issues'].append({
             'severity': 'error',
             'type': 'decode_error',
@@ -104,7 +106,7 @@ def verify_encoding(path: str) -> dict:
             })
 
     if replacement_positions:
-        diagnostics['valid'] = False
+        diagnostics['valid'] = diagnostics['success'] = False
         for pos in replacement_positions:
             diagnostics['issues'].append({
                 'severity': 'error',
@@ -122,7 +124,7 @@ def verify_encoding(path: str) -> dict:
     # Check 4: Round-trip
     reencoded = decoded.encode('cp1252')
     if reencoded != data:
-        diagnostics['valid'] = False
+        diagnostics['valid'] = diagnostics['success'] = False
         # Find first differing byte
         diff_pos = 0
         for i, (a, b) in enumerate(zip(data, reencoded)):
