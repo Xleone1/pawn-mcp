@@ -1,0 +1,23 @@
+[project]
+name = "pawn-mcp"
+version = "0.1.0"
+description = "MCP Server for Safe Editing of Pawn/Open.MP Projects with Windows-1252 encoding"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=1.0.0",
+]
+
+[project.scripts]
+pawn-mcp = "server:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["server", "encoding", "patching"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
