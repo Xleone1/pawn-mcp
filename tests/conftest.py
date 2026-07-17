@@ -13,6 +13,7 @@ from tests.helpers import (
     make_pawn_source,
     make_multi_symbol_source,
     make_ambiguous_source,
+    make_tab_source,
     SPANISH_WORDS,
     SPANISH_PUNCTUATION,
 )
@@ -21,6 +22,7 @@ __all__ = [
     'temp_pawn_file',
     'temp_multi_symbol_file',
     'temp_ambiguous_file',
+    'temp_tab_file',
     'temp_large_file',
     'spanish_words',
     'pawn_source_content',
@@ -73,6 +75,25 @@ def temp_ambiguous_file():
     Create a .pwn file with multiple symbols sharing the same name.
     """
     content = make_ambiguous_source()
+    raw = content.encode('cp1252')
+
+    tmp = tempfile.NamedTemporaryFile(
+        mode='wb', suffix='.pwn', delete=False
+    )
+    tmp.write(raw)
+    tmp.close()
+
+    yield tmp.name
+
+    os.unlink(tmp.name)
+
+
+@pytest.fixture
+def temp_tab_file():
+    """
+    Create a .pwn file using tabs for indentation (legacy SA:MP style).
+    """
+    content = make_tab_source()
     raw = content.encode('cp1252')
 
     tmp = tempfile.NamedTemporaryFile(

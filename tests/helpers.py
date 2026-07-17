@@ -116,6 +116,34 @@ def make_multi_symbol_source():
     return "\r\n".join(lines) + "\r\n"
 
 
+def make_tab_source():
+    """Build a Pawn file with tabs for indentation (legacy style)."""
+    lines = [
+        "// Tab-indented Pawn file",
+        "#include <a_samp>",
+        "",
+        "stock GetPlayerName(playerid, name[], len)",
+        "{",
+        "\tnew str[128];",
+        "\tGetPlayerName(playerid, name, len);",
+        "\tif (name[0] == EOS)",
+        "\t{",
+        "\t\tformat(str, sizeof(str), \"Jugador_%d\", playerid);",
+        "\t\tstrcat(name, str, len);",
+        "\t}",
+        "\treturn 1;",
+        "}",
+        "",
+        "main()",
+        "{",
+        "\tprintf(\"Modo cargado\");",
+        "\treturn 1;",
+        "}",
+    ]
+    return "\r\n".join(lines) + "\r\n"
+
+
+
 def make_ambiguous_source():
     """Build a Pawn file with symbols sharing names."""
     lines = [

@@ -32,6 +32,9 @@ from tools.stat import stat_file
 from tools.read_range import read_range
 from tools.list_symbols import list_symbols
 from tools.read_symbol import read_symbol
+from tools.replace_range import replace_range
+from tools.replace_symbol import replace_symbol
+from tools.insert_symbol import insert_after_symbol, insert_before_symbol
 
 # ── Logging ──────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -201,6 +204,113 @@ def tool_read_range(path: str, startLine: int, endLine: int) -> dict:
           encoding, lineEnding }
     """
     return read_range(path, startLine, endLine)
+
+
+@mcp.tool()
+def tool_replace_range(
+    path: str,
+    startLine: int,
+    endLine: int,
+    new_content: str,
+    expected_sha256: str,
+) -> dict:
+    """
+    Replace a line range directly — no diff matching.
+
+    Replaces lines [startLine..endLine] (inclusive, 1-indexed) with
+    new_content.  All bytes outside the range are preserved exactly.
+    CP1252 encoding and line endings are preserved.
+
+    Prefer this over apply_patch for AI-generated replacements where
+    whitespace matching is unreliable.
+
+    Args:
+        path: Path to the .pwn or .inc file.
+        startLine: 1-indexed start line (inclusive).
+        endLine: 1-indexed end line (inclusive).
+        new_content: The replacement text (may contain line breaks).
+        expected_sha256: SHA-256 hash from stat_file.
+
+    Returns:
+        { success, sha256, sizeBytes, encoding, lineEnding }
+    """
+    return replace_range(path, startLine, endLine, new_content, expected_sha256)
+
+
+@mcp.tool()
+def tool_replace_symbol(
+    path: str,
+    symbol: str,
+    new_content: str,
+    expected_sha256: str,
+) -> dict:
+    """
+    Replace a symbol's body directly — no diff matching.
+
+    Finds the symbol by name (functions, forwards, macros, variables, enums),
+    determines its full extent (brace-matched for functions/enums), and
+    replaces only that region.
+
+    No whitespace-sensitive diff matching — the replacement is applied
+    directly regardless of indentation differences.
+
+    Args:
+        path: Path to the .pwn or .inc file.
+        symbol: The symbol name to replace.
+        new_content: The new definition (may contain line breaks).
+        expected_sha256: SHA-256 hash from stat_file.
+
+    Returns:
+        { success, sha256, sizeBytes, encoding, lineEnding }
+    """
+    return replace_symbol(path, symbol, new_content, expected_sha256)
+
+
+@mcp.tool()
+def tool_insert_after_symbol(
+    path: str,
+    symbol: str,
+    content: str,
+    expected_sha256: str,
+) -> dict:
+    """
+    Insert content immediately after a symbol's definition.
+
+    Useful for adding new callbacks, functions, or helper functions
+    after an existing symbol.
+
+    Args:
+        path: Path to the .pwn or .inc file.
+        symbol: The symbol to insert after.
+        content: The content to insert.
+        expected_sha256: SHA-256 hash from stat_file.
+
+    Returns:
+        { success, sha256, sizeBytes, encoding, lineEnding }
+    """
+    return insert_after_symbol(path, symbol, content, expected_sha256)
+
+
+@mcp.tool()
+def tool_insert_before_symbol(
+    path: str,
+    symbol: str,
+    content: str,
+    expected_sha256: str,
+) -> dict:
+    """
+    Insert content immediately before a symbol's definition.
+
+    Args:
+        path: Path to the .pwn or .inc file.
+        symbol: The symbol to insert before.
+        content: The content to insert.
+        expected_sha256: SHA-256 hash from stat_file.
+
+    Returns:
+        { success, sha256, sizeBytes, encoding, lineEnding }
+    """
+    return insert_before_symbol(path, symbol, content, expected_sha256)
 
 
 @mcp.tool()

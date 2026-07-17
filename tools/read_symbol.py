@@ -11,8 +11,12 @@ with a candidate list and instructs the caller to disambiguate.
 """
 
 import logging
-import re
 
+from tools._symbol_utils import (
+    find_all_matching,
+    resolve_symbol_extent,
+    join_range,
+)
 from tools.errors import (
     success, error,
     FILE_NOT_FOUND, SYMBOL_NOT_FOUND, AMBIGUOUS_SYMBOL,
@@ -20,94 +24,6 @@ from tools.errors import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-# ── Symbol locator ───────────────────────────────────────────────────
-
-def _find_all_matching(
-    lines: list[str], symbol: str
-) -> list[tuple[int, str, str]]:
-    """
-    Scan *lines* and return every position where *symbol* appears as a
-    declarable name.  Returns list of (line_number, kind, matched_line).
-    """
-    candidates: list[tuple[int, str, str]] = []
-    esc = re.escape(symbol)
-
-    pat_forward = re.compile(rf"^\s*forward\s+({esc})\s*\([^;]*\)\s*;", re.I)
-    pat_func = re.compile(
-        rf"^\s*(?:public|stock|static\s+stock|static)\s+(?:\w+:\s*)*({esc})\s*\([^)]*\)",
-    )
-    pat_macro = re.compile(rf"^\s*#define\s+({esc})\b")
-    pat_var = re.compile(
-        rf"^\s*(?:new(?:\s+const)?|static(?:\s+const)?)\s+({esc})\b",
-    )
-    pat_enum = re.compile(rf"^\s*enum\s+({esc})\b")
-
-    for i, line in enumerate(lines):
-        if m := pat_forward.match(line):
-            candidates.append((i + 1, "forward", line.strip()))
-        elif m := pat_func.match(line):
-            candidates.append((i + 1, "function", line.strip()))
-        elif m := pat_macro.match(line):
-            sig = line.strip()
-            if sig.endswith("\\"):
-                j = i + 1
-                while j < len(lines):
-                    cont = lines[j].strip()
-                    sig = sig.rstrip("\\").rstrip() + " " + cont
-                    if not cont.endswith("\\"):
-                        break
-                    j += 1
-            candidates.append((i + 1, "macro", sig))
-        elif m := pat_enum.match(line):
-            candidates.append((i + 1, "enum", line.strip()))
-        elif m := pat_var.match(line):
-            candidates.append((i + 1, "variable", line.strip()))
-
-    return candidates
-
-
-# ── Brace matching ───────────────────────────────────────────────────
-
-def _find_matching_brace(lines: list[str], start_idx: int) -> int | None:
-    """
-    Starting from *start_idx* (0-indexed), find the matching '}' for
-    the first '{' encountered.
-
-    Returns 0-indexed line of the matching '}', or None.
-    """
-    search_from = start_idx
-    while search_from < len(lines):
-        stripped = lines[search_from].strip()
-        if stripped.startswith("//") or stripped.startswith("#"):
-            search_from += 1
-            continue
-        if "{" in lines[search_from]:
-            brace_line = search_from
-            break
-        search_from += 1
-    else:
-        return None
-
-    # Count braces starting from the first '{' on brace_line
-    rest = lines[brace_line]
-    idx = rest.index("{")
-    depth = 0
-
-    for li in range(brace_line, len(lines)):
-        line = lines[li]
-        start_col = idx if li == brace_line else 0
-        for ci in range(start_col, len(line)):
-            ch = line[ci]
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    return li
-
-    return None
 
 
 # ── Main tool ───────────────────────────────────────────────────────
@@ -157,7 +73,7 @@ def read_symbol(path: str, symbol: str) -> dict:
     total_lines = len(lines)
 
     # ── Find candidates ─────────────────────────────────────────────
-    candidates = _find_all_matching(lines, symbol)
+    candidates = find_all_matching(lines, symbol)
 
     if not candidates:
         return error(
@@ -178,61 +94,29 @@ def read_symbol(path: str, symbol: str) -> dict:
         )
 
     cand_line, cand_kind, cand_sig = candidates[0]
-    start_line = cand_line
-    end_line = cand_line
 
-    # ── Resolve body ────────────────────────────────────────────────
-    if cand_kind == "function":
-        closing = _find_matching_brace(lines, cand_line - 1)
-        if closing is not None:
-            end_line = closing + 1
-        body = _join_range(lines, start_line, end_line, sep)
+    # ── Resolve extent and body ─────────────────────────────────────
+    start_line, end_line = resolve_symbol_extent(lines, cand_line, cand_kind)
 
+    if cand_kind in ("function", "enum"):
+        body = join_range(lines, start_line, end_line, sep)
     elif cand_kind == "forward":
         body = lines[cand_line - 1]
-
     elif cand_kind == "macro":
-        # cand_sig is already fully stitched from _find_all_matching,
-        # but we need the physical line extent from the original file.
-        body = cand_sig
-        i = cand_line - 1
-        end_line = cand_line
-        line_i = lines[i].rstrip("\r")
-        while line_i.endswith("\\") and i + 1 < total_lines:
-            i += 1
-            end_line = i + 1
-            line_i = lines[i].rstrip("\r")
-
+        body = cand_sig  # already stitched by find_all_matching
     elif cand_kind == "variable":
-        body_lines = [lines[cand_line - 1]]
-        i = cand_line
-        while i < total_lines:
-            if ";" in body_lines[-1]:
-                break
-            i += 1
-            body_lines.append(lines[i - 1])
-            if len(body_lines) > 10:
-                break
-        end_line = i
-        body = sep.join(body_lines)
-
-    elif cand_kind == "enum":
-        closing = _find_matching_brace(lines, cand_line - 1)
-        if closing is not None:
-            end_line = closing + 1
-        body = _join_range(lines, start_line, end_line, sep)
-
+        body = join_range(lines, start_line, end_line, sep)
     else:
         body = lines[cand_line - 1]
 
     # ── Context ─────────────────────────────────────────────────────
     ctx_before_start = max(1, start_line - 5)
-    ctx_before = _join_range(
+    ctx_before = join_range(
         lines, ctx_before_start, max(1, start_line - 1), sep
     )
 
     ctx_after_end = min(total_lines, end_line + 5)
-    ctx_after = _join_range(lines, end_line + 1, ctx_after_end, sep)
+    ctx_after = join_range(lines, end_line + 1, ctx_after_end, sep)
 
     logger.info(
         f"[read_symbol] OK: {symbol} ({cand_kind}) L{start_line}-{end_line}"
@@ -252,27 +136,3 @@ def read_symbol(path: str, symbol: str) -> dict:
         lineEnding=le,
         encoding="windows-1252",
     )
-
-
-# ── Internal helper ──────────────────────────────────────────────────
-
-def _join_range(lines: list[str], start: int, end: int, sep: str) -> str:
-    """Join line slice [start-1 : end] with *sep*."""
-    if start > end:
-        return ""
-    return sep.join(lines[start - 1 : end])
-
-
-    for li in range(brace_line, len(lines)):
-        line = lines[li]
-        start_col = idx if li == brace_line else 0
-        for ci in range(start_col, len(line)):
-            ch = line[ci]
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    return li
-
-    return None

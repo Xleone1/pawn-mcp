@@ -9,6 +9,10 @@ from tools.read_range import read_range
 from tools.list_symbols import list_symbols
 from tools.read_symbol import read_symbol
 
+from tools.replace_range import replace_range
+from tools.replace_symbol import replace_symbol
+from tools.insert_symbol import insert_after_symbol, insert_before_symbol
+
 __all__ = [
     'read_pawn_file',
     'write_pawn_file',
@@ -18,4 +22,8 @@ __all__ = [
     'read_range',
     'list_symbols',
     'read_symbol',
+    'replace_range',
+    'replace_symbol',
+    'insert_after_symbol',
+    'insert_before_symbol',
 ]
