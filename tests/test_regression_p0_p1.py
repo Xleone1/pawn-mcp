@@ -41,7 +41,7 @@ class TestStandardizedResponses:
     def test_read_error_has_success_key(self):
         result = read_pawn_file('/nonexistent/file.pwn')
         assert result['success'] is False
-        assert result['error'] is True
+        assert 'errorCode' in result
 
     def test_write_success_has_success_key(self, temp_pawn_file):
         r = read_pawn_file(temp_pawn_file)

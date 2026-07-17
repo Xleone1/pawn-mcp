@@ -53,8 +53,8 @@ class TestReadPawnFile:
     def test_read_missing_file(self):
         """Non-existent file should return error."""
         result = read_pawn_file('/nonexistent/file.pwn')
-        assert result.get('error') is True
-        assert 'not found' in result.get('message', '').lower()
+        assert result['success'] is False
+        assert result['errorCode'] == 'FILE_NOT_FOUND'
 
     def test_read_consistent_sha256(self, temp_pawn_file):
         """Reading the same file twice should give the same SHA256."""
@@ -66,3 +66,29 @@ class TestReadPawnFile:
         """Content must be a string, not bytes."""
         result = read_pawn_file(temp_pawn_file)
         assert isinstance(result['content'], str)
+
+    def test_large_file_rejected(self, temp_large_file):
+        """Files larger than threshold must be rejected with FILE_TOO_LARGE."""
+        result = read_pawn_file(temp_large_file)
+        assert result['success'] is False
+        assert result['errorCode'] == 'FILE_TOO_LARGE'
+        assert 'sizeBytes' in result
+        assert 'maxAllowedBytes' in result
+        assert 'suggestedTools' in result
+        assert 'stat_file' in result['suggestedTools']
+        assert 'list_symbols' in result['suggestedTools']
+        assert 'read_symbol' in result['suggestedTools']
+        assert result['sizeBytes'] > result['maxAllowedBytes']
+
+    def test_small_file_read_includes_hint(self, temp_pawn_file):
+        """Small files should still return content but include a hint."""
+        result = read_pawn_file(temp_pawn_file)
+        assert result['success'] is True
+        assert 'hint' in result
+        assert 'list_symbols' in result['hint']
+        assert 'content' in result
+
+    def test_read_includes_line_count(self, temp_pawn_file):
+        """read_pawn_file must include lineCount."""
+        result = read_pawn_file(temp_pawn_file)
+        assert result['lineCount'] > 0

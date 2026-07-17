@@ -5,6 +5,10 @@ pawn-mcp — MCP Server for Safe Editing of Pawn/Open.MP Projects.
 Provides tools to read, write, patch, and verify Pawn source files (.pwn, .inc)
 while strictly preserving Windows-1252 (CP1252) encoding.
 
+Phase 1: Lightweight semantic navigation for large codebases.
+         Prefer symbol-based access (list_symbols, read_symbol) over
+         full-file reads to minimize LLM context usage.
+
 Usage:
     python server.py
     # Or via mcp CLI:
@@ -24,6 +28,10 @@ from tools.read import read_pawn_file
 from tools.write import write_pawn_file
 from tools.patch import apply_patch
 from tools.verify import verify_encoding
+from tools.stat import stat_file
+from tools.read_range import read_range
+from tools.list_symbols import list_symbols
+from tools.read_symbol import read_symbol
 
 # ── Logging ──────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -37,16 +45,34 @@ logger = logging.getLogger('pawn-mcp')
 mcp = FastMCP(
     name="pawn-mcp",
     instructions="""
-pawn-mcp is a specialized MCP server for safely editing Pawn/Open.MP source files.
+pawn-mcp is a specialized MCP server for safely navigating and editing
+Pawn/Open.MP source files.  Treat it as a lightweight language server:
+ask about *symbols*, not files.
 
 All .pwn and .inc files MUST be treated as Windows-1252 (CP1252).
-Never use a generic text editor for these files — always use the tools provided here.
+Never use a generic text editor for these files — always use the tools
+provided here.
 
-Available tools:
-  - read_pawn_file: Read a file with CP1252 encoding, get content + SHA256 hash
-  - write_pawn_file: Write CP1252 content with SHA256 safety check
-  - apply_patch: Apply a unified diff to a CP1252 file (PREFERRED for edits)
-  - verify_encoding: Verify a file is valid CP1252
+AVAILABLE TOOLS
+
+  stat_file     — File metadata (SHA-256, line count, encoding) —
+                  NO content. Always safe on any file size.
+  list_symbols  — Paginated symbol table (functions, forwards, macros,
+                  variables, enums).  Minimal context.
+  read_symbol   — Full definition of a single symbol with 5-line
+                  context before/after.
+  read_range    — Line window (startLine..endLine).  Use sparingly.
+  read_pawn_file — Full file read.  REFUSED for files > 500 KB.
+  apply_patch   — Apply a unified diff (PREFERRED editing method).
+  write_pawn_file  — Full-file write (SHA-256 gated).
+  verify_encoding   — Diagnose CP1252 encoding issues.
+
+RECOMMENDED WORKFLOW FOR LARGE FILES
+
+  1. stat_file        → get SHA-256 and line count
+  2. list_symbols     → understand what's in the file
+  3. read_symbol("X") → read the exact symbol you need to edit
+  4. apply_patch      → edit via unified diff
 
 IMPORTANT RULES:
   - Never convert files to UTF-8
@@ -54,6 +80,8 @@ IMPORTANT RULES:
   - Always verify SHA256 before writing
   - Use apply_patch as the preferred editing method
   - Spanish characters (á, é, í, ó, ú, ñ, ¿, ¡) must be preserved as CP1252 bytes
+  - For files > 500 KB read_pawn_file will be refused — use stat_file +
+    list_symbols + read_symbol instead
 """,
 )
 
@@ -68,6 +96,9 @@ def tool_read_pawn_file(path: str) -> dict:
     Reads the file as Windows-1252 (CP1252) and returns the content,
     encoding info, line ending style, and SHA-256 hash of the original bytes.
 
+    IMPORTANT: Files larger than PAWN_MCP_MAX_READ_SIZE_KB (default 500 KB)
+    are REFUSED.  Use stat_file + list_symbols + read_symbol instead.
+
     Use this tool FIRST before editing any Pawn file — you need the SHA-256
     hash for safe writes.
 
@@ -78,6 +109,98 @@ def tool_read_pawn_file(path: str) -> dict:
         Dictionary with content, encoding, lineEnding, sha256, sizeBytes.
     """
     return read_pawn_file(path)
+
+
+@mcp.tool()
+def tool_stat_file(path: str) -> dict:
+    """
+    Get file metadata WITHOUT returning any content.
+
+    Safe on files of any size.  Returns SHA-256 (needed for write/patch
+    safety checks), line count, byte size, encoding, and line endings.
+
+    Use this FIRST on any file you're about to work with — it gives you
+    the SHA-256 you'll need for safe writes.
+
+    Args:
+        path: Path to the .pwn or .inc file.
+
+    Returns:
+        { success, sha256, sizeBytes, lineCount, encoding, lineEnding }
+    """
+    return stat_file(path)
+
+
+@mcp.tool()
+def tool_list_symbols(
+    path: str,
+    kind: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> dict:
+    """
+    List symbols (functions, forwards, macros, variables, enums) in a Pawn file.
+
+    Provides a lightweight symbol table — the fastest way to understand
+    what's in a file without reading it.  Supports pagination for very
+    large files.
+
+    Args:
+        path: Path to the .pwn or .inc file.
+        kind: Optional filter: "function", "forward", "macro", "variable", "enum".
+        limit: Max results per page (default: 50).
+        offset: Pagination offset (0-indexed).
+
+    Returns:
+        { success, symbols: [{ name, kind, line, signature }],
+          totalSymbols, hasMore, limit, offset }
+    """
+    return list_symbols(path, kind=kind, limit=limit, offset=offset)
+
+
+@mcp.tool()
+def tool_read_symbol(path: str, symbol: str) -> dict:
+    """
+    Read the complete definition of a single symbol.
+
+    Returns the symbol's signature, body (full function body with braces,
+    multi-line macro continuation, complete enum block, etc.), plus
+    5 lines of context before and after.
+
+    If multiple symbols share the same name, returns AMBIGUOUS_SYMBOL
+    with a candidate list.
+
+    Args:
+        path: Path to the .pwn or .inc file.
+        symbol: The symbol name to look up.
+
+    Returns:
+        { success,
+          symbol: { name, kind, startLine, endLine, signature, body,
+                    contextBefore, contextAfter },
+          lineEnding, encoding }
+    """
+    return read_symbol(path, symbol)
+
+
+@mcp.tool()
+def tool_read_range(path: str, startLine: int, endLine: int) -> dict:
+    """
+    Read a specific range of lines from a Pawn file.
+
+    Line-based only (1-indexed, inclusive).  Use this sparingly —
+    prefer read_symbol for symbol-level access when possible.
+
+    Args:
+        path: Path to the .pwn or .inc file.
+        startLine: 1-indexed start line (inclusive).
+        endLine: 1-indexed end line (inclusive).
+
+    Returns:
+        { success, content, startLine, endLine, totalLines,
+          encoding, lineEnding }
+    """
+    return read_range(path, startLine, endLine)
 
 
 @mcp.tool()
@@ -98,8 +221,7 @@ def tool_write_pawn_file(path: str, content: str, expected_sha256: str) -> dict:
     Args:
         path: Path to the .pwn or .inc file.
         content: The complete new file content as a string.
-        expected_sha256: SHA-256 hash from read_pawn_file (proves you read
-                        this version and nobody else modified it).
+        expected_sha256: SHA-256 hash from stat_file or read_pawn_file.
 
     Returns:
         Dictionary with success status and new SHA-256 hash.
@@ -125,7 +247,7 @@ def tool_apply_patch(path: str, unified_diff: str, expected_sha256: str) -> dict
     Args:
         path: Path to the .pwn or .inc file.
         unified_diff: A standard unified diff string.
-        expected_sha256: SHA-256 hash from read_pawn_file.
+        expected_sha256: SHA-256 hash from stat_file or read_pawn_file.
 
     Returns:
         Dictionary with success status and new SHA-256 hash.
