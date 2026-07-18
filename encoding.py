@@ -134,6 +134,53 @@ def encode_cp1252(text: str) -> bytes:
         )
 
 
+def validate_line_ending_consistency(data: bytes, expected_ending: str) -> list[str]:
+    """
+    Verify that all line endings in *data* are consistent with
+    *expected_ending*.  Returns a list of human-readable issue
+    descriptions (empty = clean).
+
+    Used as a defense-in-depth post-write sanity check: SHA-256
+    validates byte integrity but cannot detect a file that mixes
+    e.g. bare ``\\n`` inside an otherwise-CRLF file.  Such mixed
+    files compile correctly as standalone units but break pawncc
+    when used via ``#include`` from other compilation units.
+
+    Args:
+        data: Raw bytes of the file to check.
+        expected_ending: One of ``'CRLF'``, ``'LF'``, ``'CR'``.
+
+    Returns:
+        A (possibly empty) list of issue description strings.
+    """
+    issues: list[str] = []
+    if expected_ending == 'CRLF':
+        # Every LF (0x0A) must be preceded by CR (0x0D)
+        for i, byte in enumerate(data):
+            if byte == 0x0A and (i == 0 or data[i - 1] != 0x0D):
+                issues.append(
+                    f"Bare LF (\\\\n without preceding \\\\r) at byte offset {i} "
+                    f"in file expected to use CRLF line endings"
+                )
+    elif expected_ending == 'LF':
+        # No CR (0x0D) allowed at all
+        for i, byte in enumerate(data):
+            if byte == 0x0D:
+                issues.append(
+                    f"CR (\\\\r) at byte offset {i} "
+                    f"in file expected to use LF line endings"
+                )
+    elif expected_ending == 'CR':
+        # No LF (0x0A) after any CR (0x0D)
+        for i, byte in enumerate(data):
+            if byte == 0x0D and i + 1 < len(data) and data[i + 1] == 0x0A:
+                issues.append(
+                    f"CRLF at byte offset {i} "
+                    f"in file expected to use CR line endings"
+                )
+    return issues
+
+
 def preserve_line_endings(text: str, target_ending: str) -> str:
     """
     Normalize all line endings in text to the target style.

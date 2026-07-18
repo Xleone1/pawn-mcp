@@ -20,6 +20,7 @@ from encoding import (
     ensure_trailing_newline,
     atomic_write,
     read_and_verify_sha256,
+    validate_line_ending_consistency,
     EncodingError,
 )
 
@@ -87,6 +88,22 @@ def write_pawn_file(path: str, content: str, expected_sha256: str) -> dict:
                 }
                 for issue in e.issues
             ],
+        }
+
+    # 4a. Defense-in-depth: line-ending consistency check
+    le_issues = validate_line_ending_consistency(raw, line_ending)
+    if le_issues:
+        logger.error(
+            f"[write_pawn_file] LINE_ENDING_INCONSISTENT: {len(le_issues)} issue(s)"
+        )
+        return {
+            'success': False,
+            'error': True,
+            'message': (
+                f"Line-ending mismatch detected — {len(le_issues)} issue(s). "
+                f"File has been left unchanged. Details: {'; '.join(le_issues[:5])}"
+            ),
+            'issues': le_issues,
         }
 
     # 5. Atomic write (safe against crashes and partial writes)

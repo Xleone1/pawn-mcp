@@ -11,14 +11,17 @@ import logging
 from encoding import (
     detect_line_endings,
     preserve_line_endings,
+    ensure_trailing_newline,
     encode_cp1252,
     atomic_write,
     read_and_verify_sha256,
+    validate_line_ending_consistency,
     EncodingError,
 )
 from tools.errors import (
     success, error,
     FILE_NOT_FOUND, INVALID_RANGE, SHA256_MISMATCH,
+    LINE_ENDING_INCONSISTENT,
     INTERNAL_ERROR,
 )
 
@@ -124,10 +127,12 @@ def replace_range(
 
     # ── Normalize new_content line endings ───────────────────────────
     normalized = preserve_line_endings(new_content, line_ending)
-    # Ensure the replacement ends with the line separator so the
-    # following line is properly separated.
-    if not normalized.endswith(sep_str):
-        normalized += sep_str
+    # Ensure the replacement block ends with a trailing newline if the
+    # original file had one, using the shared helper for consistency
+    # with write_pawn_file / apply_string_patch.
+    normalized = ensure_trailing_newline(
+        normalized, text, line_ending
+    )
 
     # ── Encode new content ───────────────────────────────────────────
     try:
@@ -150,6 +155,22 @@ def replace_range(
 
     # ── Build new file bytes ─────────────────────────────────────────
     result = data[:start_byte] + new_bytes + data[end_byte:]
+
+    # ── Defense-in-depth: line-ending consistency check ──────────────
+    # SHA-256 validates byte integrity but cannot detect mixed line
+    # endings (e.g. bare \n inside a CRLF file), which silently
+    # corrupt pawncc cross-unit compilation.
+    le_issues = validate_line_ending_consistency(result, line_ending)
+    if le_issues:
+        logger.error(
+            f"[replace_range] LINE_ENDING_INCONSISTENT: {len(le_issues)} issue(s)"
+        )
+        return error(
+            LINE_ENDING_INCONSISTENT,
+            f"Line-ending mismatch detected — {len(le_issues)} issue(s). "
+            f"File has been left unchanged. Details: {'; '.join(le_issues[:5])}",
+            issues=le_issues,
+        )
 
     # ── Atomic write ─────────────────────────────────────────────────
     try:

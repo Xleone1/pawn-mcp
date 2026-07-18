@@ -224,6 +224,10 @@ def tool_replace_range(
     new_content.  All bytes outside the range are preserved exactly.
     CP1252 encoding and line endings are preserved.
 
+    ``new_content`` line endings are **automatically normalized** to match
+    the file's detected style (CRLF/LF/CR).  A post-write consistency check
+    blocks the edit before touching disk if mixed line endings are detected.
+
     Prefer this over apply_patch for AI-generated replacements where
     whitespace matching is unreliable.
 
@@ -231,7 +235,8 @@ def tool_replace_range(
         path: Path to the .pwn or .inc file.
         startLine: 1-indexed start line (inclusive).
         endLine: 1-indexed end line (inclusive).
-        new_content: The replacement text (may contain line breaks).
+        new_content: The replacement text (may contain line breaks; line
+            endings will be normalized to match the file).
         expected_sha256: SHA-256 hash from stat_file.
 
     Returns:

@@ -103,6 +103,20 @@ Multiple matches → `AMBIGUOUS_SYMBOL` with candidate list.
     "totalLines": 28500 }
 ```
 
+### replace_range — Direct line-range replacement
+
+Replace a contiguous line range without diff matching.  `new_content`
+line endings are **automatically normalized** to match the file's
+detected style (CRLF/LF/CR).  All bytes outside the range are preserved.
+
+```json
+{ "path": "gamemodes/main.pwn", "startLine": 9, "endLine": 11,
+  "new_content": "// Forward declarations replaced\\n",
+  "expected_sha256": "abc123..." }
+→ { "success": true, "sha256": "...", "sizeBytes": 2345678,
+    "encoding": "windows-1252", "lineEnding": "CRLF" }
+```
+
 ### read_pawn_file — Full read (REFUSED > 500 KB)
 
 ```json
@@ -174,6 +188,7 @@ Diagnose encoding issues (BOM, replacement characters, round-trip failures).
 | `INVALID_RANGE` | `startLine` > `endLine`, out of bounds, etc. |
 | `STRING_NOT_FOUND` | `old_string` not found in file |
 | `AMBIGUOUS_MATCH` | `old_string` matches multiple locations |
+| `LINE_ENDING_INCONSISTENT` | File contains mixed line endings after edit (blocked before write) |
 | `INVALID_ARGUMENT` | Bad parameter value |
 | `INTERNAL_ERROR` | Unexpected failure |
 
@@ -229,7 +244,8 @@ pawn-mcp/
 | **SHA-256 verification** | Every write/patch verifies hash before modifying. |
 | **No replacement characters** | Non-CP1252 chars → abort with error, never silently replace. |
 | **Correct column reporting** | Accurate (line, col) even in CRLF files. |
-| **Line ending preservation** | CRLF/LF/CR detected and preserved. |
+| **Line ending preservation** | CRLF/LF/CR detected and preserved. `new_content` is auto-normalized. |
+| **Line-ending consistency check** | Post-edit validation: bare `\n` in CRLF files (or vice versa) is caught and blocked before write. |
 | **Large-file safety** | `read_pawn_file` refuses > 500 KB. Use symbol tools. |
 
 ## Encoding Rules
