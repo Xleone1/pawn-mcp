@@ -86,6 +86,33 @@ def apply_hunk(original_lines: list[str], hunk: Hunk) -> list[str]:
 
     Returns the modified lines or raises ValueError.
     """
+    # Validate hunk header counts match actual body lines (Fix 1).
+    # The LLM may miscount lines when generating a diff from read_symbol()
+    # body text that has no embedded line numbers.  Catch the mismatch
+    # before we mutate anything so the file is never partially modified.
+    actual_old_count = sum(
+        1 for line in hunk.lines if line.startswith(' ') or line.startswith('-')
+    )
+    actual_new_count = sum(
+        1 for line in hunk.lines if line.startswith(' ') or line.startswith('+')
+    )
+    if actual_old_count != hunk.old_count:
+        raise ValueError(
+            f"Hunk header old_count mismatch: declared old_count={hunk.old_count}, "
+            f"but hunk body has {actual_old_count} context/removal lines "
+            f"(context=' ' + removal='-'). "
+            f"The diff generator miscounted lines — regenerate the hunk with "
+            f"accurate counts."
+        )
+    if actual_new_count != hunk.new_count:
+        raise ValueError(
+            f"Hunk header new_count mismatch: declared new_count={hunk.new_count}, "
+            f"but hunk body has {actual_new_count} context/addition lines "
+            f"(context=' ' + addition='+'). "
+            f"The diff generator miscounted lines — regenerate the hunk with "
+            f"accurate counts."
+        )
+
     result: list[str] = []
     old_idx = hunk.old_start - 1  # Convert to 0-indexed
     new_idx = hunk.new_start - 1
@@ -189,3 +216,49 @@ def apply_unified_diff(original: str, diff_text: str) -> str:
         result += '\n'
 
     return result
+
+
+def apply_string_patch(
+    original: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool = False,
+) -> str:
+    """
+    Replace old_string with new_string in original content.
+
+    This is the **preferred** editing method when the caller has the exact
+    body text returned by ``read_symbol()``.  Unlike diff-based patching,
+    this requires no line-number counting from the caller — the match is
+    purely textual.
+
+    Args:
+        original: The original file content.
+        old_string: Exact text to find and replace. Must match verbatim,
+            including whitespace and line endings.
+        new_string: Replacement text.
+        replace_all: If True, replace all occurrences. If False (default),
+            old_string must match exactly once or this raises ValueError.
+
+    Returns:
+        The patched content.
+
+    Raises:
+        ValueError: If old_string is not found, or matches more than once
+            when replace_all is False.
+    """
+    count = original.count(old_string)
+    if count == 0:
+        raise ValueError(
+            "old_string not found in file — it must match the file's exact "
+            "current content, including whitespace, indentation, and line endings."
+        )
+    if count > 1 and not replace_all:
+        raise ValueError(
+            f"old_string matches {count} locations in the file. "
+            f"Make old_string more specific (include more surrounding context) "
+            f"or pass replace_all=True if you intend to replace every occurrence."
+        )
+    if replace_all:
+        return original.replace(old_string, new_string)
+    return original.replace(old_string, new_string, 1)

@@ -28,7 +28,8 @@ This minimizes LLM context usage — critical for large gamemodes (5–20 MB).
               │  list_symbols()  "What's here?"      │
               │  read_symbol()   "Show me X"         │
               │  read_range()    "Show lines N-M"    │
-              │  apply_patch()   "Edit this"         │
+              │  apply_string_patch() "Edit this"    │
+              │  apply_patch()   "Diff fallback"     │
               │  verify_encoding()"Diagnose"         │
               └──────────────────────────────────────┘
 ```
@@ -111,9 +112,26 @@ Multiple matches → `AMBIGUOUS_SYMBOL` with candidate list.
     "suggestedTools": ["stat_file", "list_symbols", "read_symbol", "read_range"] }
 ```
 
-### apply_patch _(preferred editing method)_
+### apply_string_patch _(preferred editing method)_
 
-Use `stat_file` to get the SHA-256, then `apply_patch` to edit.
+Replace text by exact string match — no line numbers required.
+Because `read_symbol()` returns the exact `body` text of a symbol,
+you can quote that text verbatim as `old_string`.  This eliminates
+the line-counting errors common with diff-based patching.
+
+```json
+{ "path": "gamemodes/main.pwn",
+  "old_string": "    printf(\"Hello World\");\n    return 1;",
+  "new_string": "    printf(\"Hello Updated World\");\n    return 1;",
+  "expected_sha256": "abc123...",
+  "replace_all": false }
+```
+
+### apply_patch _(fallback editing method)_
+
+Apply a unified diff.  Use `stat_file` to get the SHA-256 first.
+**Prefer `apply_string_patch`** when you have the exact text from `read_symbol()`
+— it avoids line-counting mistakes that cause diff mismatches.
 
 ```json
 { "path": "gamemodes/main.pwn",
@@ -132,11 +150,15 @@ Diagnose encoding issues (BOM, replacement characters, round-trip failures).
 ## Recommended Workflow for Large Files
 
 ```
-1. stat_file         → get SHA-256 and line count
-2. list_symbols      → understand what's in the file
-3. read_symbol("X")  → read the exact symbol you need to edit
-4. apply_patch       → edit via unified diff
+1. stat_file            → get SHA-256 and line count
+2. list_symbols         → understand what's in the file
+3. read_symbol("X")     → read the exact symbol you need to edit
+4. apply_string_patch   → edit by quoting the exact body text from read_symbol
 ```
+
+> **Note:** `apply_string_patch` is preferred over `apply_patch` because it
+> matches text verbatim (exactly as returned by `read_symbol`), eliminating
+> line-counting errors. Use `apply_patch` only as a fallback.
 
 ## Structured Error Codes
 
@@ -150,6 +172,8 @@ Diagnose encoding issues (BOM, replacement characters, round-trip failures).
 | `SYMBOL_NOT_FOUND` | Symbol doesn't exist in file |
 | `AMBIGUOUS_SYMBOL` | Multiple symbols match (candidates provided) |
 | `INVALID_RANGE` | `startLine` > `endLine`, out of bounds, etc. |
+| `STRING_NOT_FOUND` | `old_string` not found in file |
+| `AMBIGUOUS_MATCH` | `old_string` matches multiple locations |
 | `INVALID_ARGUMENT` | Bad parameter value |
 | `INTERNAL_ERROR` | Unexpected failure |
 
@@ -166,10 +190,10 @@ pytest tests/ -v
 
 ```
 pawn-mcp/
-    server.py            # MCP server entry point (8 tools)
+    server.py            # MCP server entry point (9 tools)
     config.py            # Environment variable thresholds
     encoding.py          # CP1252 encode/decode, atomic writes, SHA256
-    patching.py          # Unified diff parser and applicator
+    patching.py          # Unified diff parser/applicator + string-patch
     pyproject.toml
     tools/
         __init__.py
@@ -180,7 +204,7 @@ pawn-mcp/
         read_symbol.py   # read_symbol (body + context, brace matching)
         read_range.py    # read_range (line window)
         write.py         # write_pawn_file (atomic writes)
-        patch.py         # apply_patch (atomic writes)
+        patch.py         # apply_patch + apply_string_patch (atomic writes)
         verify.py        # verify_encoding
     tests/
         conftest.py      # Fixtures (large file, multi-symbol, ambiguous)

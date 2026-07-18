@@ -27,6 +27,7 @@ from mcp.server.fastmcp import FastMCP
 from tools.read import read_pawn_file
 from tools.write import write_pawn_file
 from tools.patch import apply_patch
+from tools.patch import apply_string_patch_tool as apply_string_patch
 from tools.verify import verify_encoding
 from tools.stat import stat_file
 from tools.read_range import read_range
@@ -66,7 +67,8 @@ AVAILABLE TOOLS
                   context before/after.
   read_range    — Line window (startLine..endLine).  Use sparingly.
   read_pawn_file — Full file read.  REFUSED for files > 500 KB.
-  apply_patch   — Apply a unified diff (PREFERRED editing method).
+  apply_string_patch — Replace by exact text match (PREFERRED editing method).
+  apply_patch   — Apply a unified diff (fallback editing method).
   write_pawn_file  — Full-file write (SHA-256 gated).
   verify_encoding   — Diagnose CP1252 encoding issues.
 
@@ -75,13 +77,14 @@ RECOMMENDED WORKFLOW FOR LARGE FILES
   1. stat_file        → get SHA-256 and line count
   2. list_symbols     → understand what's in the file
   3. read_symbol("X") → read the exact symbol you need to edit
-  4. apply_patch      → edit via unified diff
+  4. apply_string_patch → edit by quoting the exact body text from read_symbol
 
 IMPORTANT RULES:
   - Never convert files to UTF-8
   - Never add UTF-8 BOM
   - Always verify SHA256 before writing
-  - Use apply_patch as the preferred editing method
+  - Use apply_string_patch as the preferred editing method (no line counting needed)
+  - Use apply_patch only as a fallback when you don't have the exact text from read_symbol
   - Spanish characters (á, é, í, ó, ú, ñ, ¿, ¡) must be preserved as CP1252 bytes
   - For files > 500 KB read_pawn_file will be refused — use stat_file +
     list_symbols + read_symbol instead
@@ -363,6 +366,42 @@ def tool_apply_patch(path: str, unified_diff: str, expected_sha256: str) -> dict
         Dictionary with success status and new SHA-256 hash.
     """
     return apply_patch(path, unified_diff, expected_sha256)
+
+
+@mcp.tool()
+def tool_apply_string_patch(
+    path: str,
+    old_string: str,
+    new_string: str,
+    expected_sha256: str,
+    replace_all: bool = False,
+) -> dict:
+    """
+    Replace old_string with new_string in a Pawn source file by exact text match.
+
+    This is the **PREFERRED** editing tool.  Because ``read_symbol()`` returns
+    the exact ``body`` text of a symbol, you can quote that text verbatim as
+    ``old_string`` without needing to count lines or generate line-number
+    diffs — the match is purely textual.
+
+    Safety:
+    - SHA-256 check ensures no external modifications
+    - CP1252 encoding is enforced — unsupported Unicode aborts the edit
+    - Line endings are preserved
+
+    Args:
+        path: Path to the .pwn or .inc file.
+        old_string: Exact text to find and replace. Must match verbatim,
+            including whitespace and line endings.
+        new_string: Replacement text.
+        expected_sha256: SHA-256 hash from stat_file or read_pawn_file.
+        replace_all: If True, replace all occurrences. If False (default),
+            old_string must match exactly once or the edit is rejected.
+
+    Returns:
+        Dictionary with success status and new SHA-256 hash.
+    """
+    return apply_string_patch(path, old_string, new_string, expected_sha256, replace_all)
 
 
 @mcp.tool()
