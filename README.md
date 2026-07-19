@@ -109,12 +109,48 @@ Replace a contiguous line range without diff matching.  `new_content`
 line endings are **automatically normalized** to match the file's
 detected style (CRLF/LF/CR).  All bytes outside the range are preserved.
 
+**Prefer `apply_string_patch` when possible** — it uses exact text
+matching and has no line-number risk at all.  Use `replace_range` only
+when you specifically need a line-anchored edit and cannot match by
+exact string.
+
+**Critical:** line numbers shift after every write.  After any
+`replace_range` call, especially consecutive ones on the same file,
+re-run `stat_file` / `read_range` on the target area before a second
+corrective edit.  When in doubt, call with `dry_run=True` first to
+preview exactly what will be touched.
+
 ```json
 { "path": "gamemodes/main.pwn", "startLine": 9, "endLine": 11,
   "new_content": "// Forward declarations replaced\\n",
-  "expected_sha256": "abc123..." }
+  "expected_sha256": "abc123...",
+  "dry_run": false }
 → { "success": true, "sha256": "...", "sizeBytes": 2345678,
-    "encoding": "windows-1252", "lineEnding": "CRLF" }
+    "encoding": "windows-1252", "lineEnding": "CRLF",
+    "linesBeforeContext": ["// line 8 content"],
+    "linesAfterContext": ["// line 12 content"] }
+```
+
+**Dry-run preview (dry_run=true):** computes the operation without
+writing anything to disk, letting you sanity-check boundaries:
+
+```json
+{ "path": "gamemodes/main.pwn", "startLine": 9, "endLine": 11,
+  "new_content": "// Forward declarations replaced\\n",
+  "expected_sha256": "abc123...",
+  "dry_run": true }
+→ { "success": true, "dryRun": true,
+    "preview": {
+      "linesBefore": ["// line 6", "// line 7", "// line 8"],
+      "linesToBeReplaced": [
+        {"lineNumber": 9, "content": "forward ..."},
+        {"lineNumber": 10, "content": "forward ..."},
+        {"lineNumber": 11, "content": "forward ..."}
+      ],
+      "linesAfter": ["new gVar...", "// line 13"],
+      "newContentPreview": "// Forward declarations replaced\\n"
+    }
+  }
 ```
 
 ### read_pawn_file — Full read (REFUSED > 500 KB)

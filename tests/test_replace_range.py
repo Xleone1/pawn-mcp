@@ -183,3 +183,119 @@ class TestReplaceRangeLineEndingNormalization:
         issues_mixed = validate_line_ending_consistency(truly_mixed, "CRLF")
         assert len(issues_mixed) > 0
         assert "Bare LF" in issues_mixed[0]
+
+
+class TestReplaceRangeBoundary:
+    """Exact boundary tests — 1-indexed → 0-indexed conversion correctness."""
+
+    def test_exact_five_line_boundary(self, tmp_path):
+        """replace_range(startLine=2, endLine=3) on a 5-line file
+        must produce [L1, X, Y, L4, L5] — L1/L4/L5 untouched."""
+        import tempfile
+        content = "L1\nL2\nL3\nL4\nL5\n"
+        path = tmp_path / "five.pwn"
+        path.write_text(content, encoding="cp1252")
+
+        from tools.stat import stat_file
+        from tools.read_range import read_range
+        from tools.replace_range import replace_range
+
+        sha = stat_file(str(path))["sha256"]
+        new_content = "X\nY\n"
+        result = replace_range(str(path), 2, 3, new_content, sha)
+        assert result["success"] is True
+
+        # Read back and verify exact content
+        full = read_range(str(path), 1, 5)["content"]
+        assert full == "L1\nX\nY\nL4\nL5\n", f"Unexpected content: {full!r}"
+
+        # Verify context lines in response
+        assert result.get("linesBeforeContext") == ["L1"]
+        assert result.get("linesAfterContext") == ["L4", "L5"]
+
+    def test_brace_before_range_survives(self, tmp_path):
+        """A '{' immediately before the replaced range MUST survive untouched."""
+        import tempfile
+        content = "line1\n{\nline3\nline4\nline5\nline6\n"
+        path = tmp_path / "brace.pwn"
+        path.write_text(content, encoding="cp1252")
+
+        from tools.stat import stat_file
+        from tools.read_range import read_range
+        from tools.replace_range import replace_range
+
+        sha = stat_file(str(path))["sha256"]
+
+        # Replace lines 3-4 — line 2 (the '{') must survive.
+        result = replace_range(str(path), 3, 4, "NEW3\nNEW4\n", sha)
+        assert result["success"] is True
+
+        full = read_range(str(path), 1, 6)["content"]
+        assert full == "line1\n{\nNEW3\nNEW4\nline5\nline6\n", f"Brace not preserved: {full!r}"
+
+        # Verify context confirms the brace was untouched
+        assert result.get("linesBeforeContext") == ["line1", "{"]
+        assert result.get("linesAfterContext") == ["line5", "line6"]
+
+
+class TestReplaceRangeDryRun:
+    """dry_run=True tests — preview without mutation."""
+
+    def test_dry_run_no_file_mutation(self, tmp_path):
+        """dry_run=True must NOT write to disk or change mtime."""
+        import tempfile, os
+        content = "L1\nL2\nL3\nL4\nL5\n"
+        path = tmp_path / "dry.pwn"
+        path.write_text(content, encoding="cp1252")
+
+        from tools.stat import stat_file
+        from tools.replace_range import replace_range
+
+        sha = stat_file(str(path))["sha256"]
+        mtime_before = os.path.getmtime(str(path))
+
+        result = replace_range(str(path), 2, 3, "X\nY\n", sha, dry_run=True)
+        assert result["success"] is True
+        assert result["dryRun"] is True
+
+        # File must be untouched
+        mtime_after = os.path.getmtime(str(path))
+        assert mtime_after == mtime_before, "File was modified during dry_run!"
+        assert path.read_text(encoding="cp1252") == content, "File content changed during dry_run!"
+
+        # Preview must accurately describe the operation
+        preview = result["preview"]
+        assert preview["linesBefore"] == ["L1"]
+        assert preview["linesToBeReplaced"] == [
+            {"lineNumber": 2, "content": "L2"},
+            {"lineNumber": 3, "content": "L3"},
+        ]
+        assert preview["linesAfter"] == ["L4", "L5"]
+        assert preview["newContentPreview"] == "X\nY\n"
+
+    def test_dry_run_preserves_file_after_real_write(self, tmp_path):
+        """After a real write, dry_run on the updated file shows new state."""
+        import tempfile
+        content = "A\nB\nC\nD\nE\n"
+        path = tmp_path / "dry2.pwn"
+        path.write_text(content, encoding="cp1252")
+
+        from tools.stat import stat_file
+        from tools.replace_range import replace_range
+
+        # Real write: replace lines 2-3 with "X\n"
+        sha1 = stat_file(str(path))["sha256"]
+        r1 = replace_range(str(path), 2, 3, "X\n", sha1)
+        assert r1["success"] is True
+
+        # dry_run on updated file should show shifted line numbers
+        sha2 = stat_file(str(path))["sha256"]
+        r2 = replace_range(str(path), 2, 2, "Y\n", sha2, dry_run=True)
+        assert r2["success"] is True
+        assert r2["dryRun"] is True
+        # After first edit: A, X, D, E — line 2 is now "X"
+        assert r2["preview"]["linesToBeReplaced"] == [
+            {"lineNumber": 2, "content": "X"},
+        ]
+        assert r2["preview"]["linesBefore"] == ["A"]
+        assert r2["preview"]["linesAfter"] == ["D", "E"]

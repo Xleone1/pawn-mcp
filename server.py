@@ -216,6 +216,7 @@ def tool_replace_range(
     endLine: int,
     new_content: str,
     expected_sha256: str,
+    dry_run: bool = False,
 ) -> dict:
     """
     Replace a line range directly — no diff matching.
@@ -228,8 +229,16 @@ def tool_replace_range(
     the file's detected style (CRLF/LF/CR).  A post-write consistency check
     blocks the edit before touching disk if mixed line endings are detected.
 
-    Prefer this over apply_patch for AI-generated replacements where
-    whitespace matching is unreliable.
+    Prefer ``apply_string_patch`` for most edits — it uses exact text
+    matching and has no line-number risk at all.  Use this tool only when
+    you specifically need a line-anchored edit and cannot match by exact
+    string.
+
+    **Critical safety rule:** line numbers shift after every write.  After
+    any ``tool_replace_range`` call, especially consecutive ones on the
+    same file, re-run ``stat_file`` / ``read_range`` on the target area
+    before a second corrective edit.  When in doubt, call with
+    ``dry_run=True`` first to preview exactly what will be touched.
 
     Args:
         path: Path to the .pwn or .inc file.
@@ -238,11 +247,22 @@ def tool_replace_range(
         new_content: The replacement text (may contain line breaks; line
             endings will be normalized to match the file).
         expected_sha256: SHA-256 hash from stat_file.
+        dry_run: If True, preview what WOULD happen without writing.
+            Returns the exact lines that would be removed and preserved
+            on either side.  Use this before a second consecutive edit
+            when line numbers may have shifted.
 
     Returns:
-        { success, sha256, sizeBytes, encoding, lineEnding }
+        { success, sha256, sizeBytes, encoding, lineEnding,
+          linesBeforeContext, linesAfterContext }
+        On dry_run: { success, dryRun: true,
+                       preview: { linesBefore, linesToBeReplaced,
+                                  linesAfter, newContentPreview } }
     """
-    return replace_range(path, startLine, endLine, new_content, expected_sha256)
+    return replace_range(
+        path, startLine, endLine, new_content, expected_sha256,
+        dry_run=dry_run,
+    )
 
 
 @mcp.tool()
